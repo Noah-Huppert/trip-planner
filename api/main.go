@@ -40,7 +40,7 @@ type Config struct {
 	HTTPAddr string `validate:"required" default:":5000"`
 
 	// DBConnOpts are database connection options
-	DBConnOpts string `validate:"required" default:"host=localhost user=dev-trip-planner password=dev-trip-planner dbname=dev-trip-planner"`
+	DBConnOpts string `validate:"required" default:"host=localhost user=dev-trip-planner password=dev-trip-planner dbname=dev-trip-planner sslmode=disable"`
 }
 
 // User represents a person who uses trip planner
