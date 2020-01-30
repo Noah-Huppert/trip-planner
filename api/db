@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+ctag=postgres:12-alpine
+cname=dev-trip-planner
+ccli="sudo podman"
+
+POSTGRES_DB="dev-trip-planner"
+POSTGRES_USER="dev-trip-planner"
+POSTGRES_PASSWORD="dev-trip-planner"
+
+function die() {
+    echo "$0: $@" >&2
+    exit 1
+}
+
+case "$1" in
+    start)
+	   if $ccli ps -a | grep "$cname" &> /dev/null; then
+		  $ccli start "$cname"
+	   else
+		  $ccli run \
+			   -d \
+			   --name "$cname" \
+			   -e POSTGRES_DB="$POSTGRES_DB" \
+			   -e POSTGRES_USER="$POSTGRES_USER" \
+			   -e POSTGRES_PASSWORD="$POSTGRES_PASSWORD" \
+			   --net host \
+			   "$ctag"
+	   fi
+	   ;;
+    stop) $ccli stop "$cname" ;;
+    rm) $ccli rm -f "$cname" ;;
+    cli)
+	   $ccli run -it --rm --net host "$ctag" \
+		    psql -h localhost -U "$POSTGRES_USER" -p "$POSTGRES_PSSWORD" "$POSTGRES_DB"
+	   ;;
+    *) die "unknown argument \"$1\", must be \"start\", \"stop\", \"rm\", \"cli\"" ;;
+esac
