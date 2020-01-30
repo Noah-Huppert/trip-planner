@@ -138,7 +138,7 @@ func (h CreateUserHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Save in DB
-	if err := h.db.Create(user).Error; err != nil {
+	if err := h.db.Create(&user).Error; err != nil {
 		h.WriteErr(w, fmt.Errorf("failed to save user in database"), err)
 		return
 	}
