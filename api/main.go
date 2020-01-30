@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 
 	"github.com/Noah-Huppert/goconf"
@@ -17,6 +18,21 @@ import (
 	_ "github.com/jinzhu/gorm/dialects/postgres"
 	"gopkg.in/go-playground/validator.v9"
 )
+
+// GORMLogger adapts the servers logger for use in GORM
+type GORMLogger struct {
+	log golog.Logger
+}
+
+// Print implements the gorm logger interface
+func (l GORMLogger) Print(vals ...interface{}) {
+	strs := []string{}
+	for _, val := range vals {
+		strs = append(strs, fmt.Sprintf("%#v", val))
+	}
+
+	l.log.Infof("gorm log: %s", strings.Join(strs, ", "))
+}
 
 // Config configures the app
 type Config struct {
@@ -47,10 +63,16 @@ type BaseHandler struct {
 // GetChild creates a derrivite BaseHandler with a logger setup to indicate
 // which handler is using it
 func (h BaseHandler) GetChild(logName string) BaseHandler {
-	return BaseHandler{
+	base := BaseHandler{
 		log: h.log.GetChild(logName),
 		db:  h.db,
 	}
+
+	base.db.SetLogger(GORMLogger{
+		log: base.log,
+	})
+
+	return base
 }
 
 // WriteErr writes and logs an error response as JSON
