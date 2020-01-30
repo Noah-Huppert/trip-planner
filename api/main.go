@@ -164,6 +164,11 @@ func main() {
 		log.Fatalf("failed to connect to DB: %s", err)
 	}
 
+	// Migrate DB
+	if err := db.AutoMigrate(&User{}).Error; err != nil {
+		log.Fatalf("failed to migrate user table: %s", err)
+	}
+
 	// Start HTTP API
 	baseHdlr := BaseHandler{
 		log: log,
