@@ -17,6 +17,7 @@ import (
 	"github.com/Noah-Huppert/goconf"
 	"github.com/Noah-Huppert/gointerrupt"
 	"github.com/Noah-Huppert/golog"
+	"github.com/dgrijalva/jwt-go"
 	"github.com/dwin/goArgonPass"
 	"github.com/gorilla/mux"
 	"github.com/jinzhu/gorm"
@@ -46,11 +47,17 @@ type Config struct {
 
 	// DBConnOpts are database connection options
 	DBConnOpts string `validate:"required" default:"host=localhost user=dev-trip-planner password=dev-trip-planner dbname=dev-trip-planner sslmode=disable"`
+
+	// JWTSecret is the secret used to sign JWT API authentication tokens
+	JWTSecret []byte `validate:"required" default:"dev-trip-planner-secret"`
 }
 
 // User represents a person who uses trip planner
 type User struct {
 	gorm.Model
+
+	// Email of user
+	Email string `gorm:"NOT NULL;UNIQUE" json:"email"`
 
 	// Name of user
 	Name string `gorm:"NOT NULL" json:"name"`
@@ -67,10 +74,65 @@ type InviteCode struct {
 	Code string `gorm:"NOT NULL;UNIQUE"`
 }
 
+// InviteCodeExpirer deletes invite codes which are older than a day
+type InviteCodeExpirer struct {
+	log     golog.Logger
+	db      *gorm.DB
+	ctxPair gointerrupt.CtxPair
+}
+
+// goroutine checks every minute for expired invite codes and deletes them
+func (e InviteCodeExpirer) goroutine() {
+	ticker := time.NewTicker(1 * time.Minute)
+
+	for {
+		select {
+		case <-e.ctxPair.Graceful().Done():
+			return
+			break
+		case <-ticker.C:
+			rows, err := e.db.Where("age(created_at) >= interval '1 day'").
+				Find(&InviteCode{}).Rows()
+			if err == sql.ErrNoRows {
+				continue
+			} else if err != nil {
+				e.log.Errorf("failed to get expired invite codes: %s", err)
+				continue
+			}
+
+			for rows.Next() {
+				var inviteCode InviteCode
+				if err := rows.Scan(&inviteCode); err != nil {
+					e.log.Errorf("failed to scan invite code into "+
+						"struct: %s", err)
+					continue
+				}
+
+				err := e.db.Delete(&inviteCode).Error
+				if err != nil {
+					e.log.Errorf("failed to delete old invite code: %s",
+						err)
+					continue
+				}
+
+				e.log.Infof("deleted invite code id=%d", inviteCode.ID)
+			}
+
+			if err := rows.Err(); err != nil {
+				e.log.Errorf("failed to iterate over expired invite "+
+					"codes: %s", err)
+				continue
+			}
+			break
+		}
+	}
+}
+
 // BaseHandler holds some useful fields which every handler might use
 type BaseHandler struct {
 	log golog.Logger
 	db  *gorm.DB
+	cfg Config
 }
 
 // GetChild creates a derrivite BaseHandler with a logger setup to indicate
@@ -79,6 +141,7 @@ func (h BaseHandler) GetChild(logName string) BaseHandler {
 	base := BaseHandler{
 		log: h.log.GetChild(logName),
 		db:  h.db,
+		cfg: h.cfg,
 	}
 
 	base.db.SetLogger(GORMLogger{
@@ -161,6 +224,7 @@ type CreateUserHandler struct {
 // CreateUserReq are the fields required by CreateUserHandler. Most fields
 // duplicate User struct fields.
 type CreateUserReq struct {
+	Email    string `json:"email" validate:"required,email"`
 	Name     string `json:"name" validate:"required"`
 	Password string `json:"password" validate:"required"`
 
@@ -206,6 +270,7 @@ func (h CreateUserHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	user := User{
+		Email:        createReq.Email,
 		Name:         createReq.Name,
 		PasswordHash: hashedPw,
 	}
@@ -227,57 +292,64 @@ func (h CreateUserHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.WriteJSON(w, -1, user)
 }
 
-// InviteCodeExpirer deletes invite codes which are older than a day
-type InviteCodeExpirer struct {
-	log     golog.Logger
-	db      *gorm.DB
-	ctxPair gointerrupt.CtxPair
+// AuthUserHandler authenticate a user's password is correct and distribute
+// authentication tokens for the API.
+type AuthUserHandler struct {
+	BaseHandler
 }
 
-func (e InviteCodeExpirer) goroutine() {
-	ticker := time.NewTicker(1 * time.Minute)
+// AuthUserReq contains user credentials
+type AuthUserReq struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
 
-	for {
-		select {
-		case <-e.ctxPair.Graceful().Done():
-			return
-			break
-		case <-ticker.C:
-			rows, err := e.db.Where("age(created_at) >= interval '1 day'").
-				Find(&InviteCode{}).Rows()
-			if err == sql.ErrNoRows {
-				continue
-			} else if err != nil {
-				e.log.Errorf("failed to get expired invite codes: %s", err)
-				continue
-			}
+// AuthUserResp contains the created authentication token
+type AuthUserResp struct {
+	AuthToken string `json:"auth_token"`
+}
 
-			for rows.Next() {
-				var inviteCode InviteCode
-				if err := rows.Scan(&inviteCode); err != nil {
-					e.log.Errorf("failed to scan invite code into "+
-						"struct: %s", err)
-					continue
-				}
-
-				err := e.db.Delete(&inviteCode).Error
-				if err != nil {
-					e.log.Errorf("failed to delete old invite code: %s",
-						err)
-					continue
-				}
-
-				e.log.Infof("deleted invite code id=%d", inviteCode.ID)
-			}
-
-			if err := rows.Err(); err != nil {
-				e.log.Errorf("failed to iterate over expired invite "+
-					"codes: %s", err)
-				continue
-			}
-			break
-		}
+// ServeHTTP authenticates the user
+func (h AuthUserHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Read body
+	var authReq AuthUserReq
+	if err := DecodeAndValidate(r.Body, &authReq); err != nil {
+		h.WriteErr(w, -1, fmt.Errorf("failed to read body"), err)
+		return
 	}
+
+	// Get user by email
+	user := User{Email: authReq.Email}
+	if err := h.db.First(&user).Error; gorm.IsRecordNotFoundError(err) {
+		h.WriteErr(w, http.StatusNotFound, fmt.Errorf("no user found "+
+			"with email", err), nil)
+		return
+	}
+
+	// Verify password
+	err := argonpass.Verify(authReq.Password, user.PasswordHash)
+	if err != nil {
+		h.WriteErr(w, http.StatusUnauthorized,
+			fmt.Errorf("incorrect password"), err)
+		return
+	}
+
+	// Build JWT authentication token
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"sub": user.ID,
+		"exp": time.Now().Add(14 * 24 * time.Hour).Unix(),
+	})
+	tokenStr, err := token.SignedString(h.cfg.JWTSecret)
+	if err != nil {
+		h.WriteErr(w, -1, nil, fmt.Errorf("failed to sign authentication "+
+			"token JWT: %s", err))
+		return
+	}
+
+	// Send auth token response
+	h.WriteJSON(w, -1, AuthUserResp{
+		AuthToken: tokenStr,
+	})
 }
 
 func main() {
@@ -362,11 +434,15 @@ func main() {
 		baseHdlr := BaseHandler{
 			log: log,
 			db:  db,
+			cfg: cfg,
 		}
 
 		router := mux.NewRouter()
 		router.Handle("/api/v0/users", CreateUserHandler{
 			BaseHandler: baseHdlr.GetChild("create user"),
+		}).Methods("POST")
+		router.Handle("/api/v0/users/auth", AuthUserHandler{
+			BaseHandler: baseHdlr.GetChild("auth user"),
 		}).Methods("POST")
 
 		server := http.Server{
