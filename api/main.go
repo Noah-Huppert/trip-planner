@@ -88,13 +88,30 @@ func (h BaseHandler) GetChild(logName string) BaseHandler {
 	return base
 }
 
-// WriteErr writes and logs an error response as JSON
-func (h BaseHandler) WriteErr(w io.Writer, pubErr, privErr error) {
+// WriteErr writes and logs an error response as JSON.
+// If pubErr is nil then an error saying "unknown server error" is sent.
+// If code is -1 then http.StatusInternalServerError is used.
+func (h BaseHandler) WriteErr(w http.ResponseWriter, code int, pubErr,
+	privErr error) {
+
+	// Write status code
+	if code == -1 {
+		code = http.StatusInternalServerError
+	}
+	w.WriteHeader(code)
+
+	// Write Content-Type header
+	w.Header().Set("Content-Type", "application/json")
+
+	// Set default public error
 	if pubErr == nil {
 		pubErr = fmt.Errorf("unknown server error")
 	}
 
+	// Log error
 	h.log.Errorf("public error=%s, private error=%s", pubErr, privErr)
+
+	// Write JSON response
 	if _, err := fmt.Fprintf(w, "{\"error\": \"%s\"}", pubErr); err != nil {
 		h.log.Errorf("failed to write error response: %s", err)
 	}
@@ -117,8 +134,19 @@ func DecodeAndValidate(reader io.Reader, value interface{}) error {
 	return nil
 }
 
-// WriteJSON writes JSON
-func (h BaseHandler) WriteJSON(writer io.Writer, value interface{}) {
+// WriteJSON writes JSON.
+// If status is -1 then http.StatusOK is used.
+func (h BaseHandler) WriteJSON(writer http.ResponseWriter, status int,
+	value interface{}) {
+
+	// Set default status
+	if status == -1 {
+		status = http.StatusOK
+	}
+
+	// Write JSON
+	writer.Header().Set("Content-Type", "application/json")
+
 	encode := json.NewEncoder(writer)
 	if err := encode.Encode(value); err != nil {
 		h.log.Errorf("failed to write JSON value=%#v, error: %s", value, err)
@@ -152,7 +180,7 @@ func (h CreateUserHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Decode body
 	var createReq CreateUserReq
 	if err := DecodeAndValidate(r.Body, &createReq); err != nil {
-		h.WriteErr(w, fmt.Errorf("failed to read body: %s", err), nil)
+		h.WriteErr(w, -1, fmt.Errorf("failed to read body: %s", err), nil)
 		return
 	}
 
@@ -161,10 +189,11 @@ func (h CreateUserHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	err := h.db.Where(&inviteCode).Find(&InviteCode{}).Error
 	if gorm.IsRecordNotFoundError(err) {
-		h.WriteErr(w, fmt.Errorf("invalid invite code"), nil)
+		h.WriteErr(w, http.StatusNotFound,
+			fmt.Errorf("invalid invite code"), nil)
 		return
 	} else if err != nil {
-		h.WriteErr(w, fmt.Errorf("failed to check invite code"),
+		h.WriteErr(w, -1, fmt.Errorf("failed to check invite code"),
 			fmt.Errorf("failed to query DB: %#v", err))
 		return
 	}
@@ -172,7 +201,7 @@ func (h CreateUserHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Hash user password
 	hashedPw, err := argonpass.Hash(createReq.Password)
 	if err != nil {
-		h.WriteErr(w, nil, fmt.Errorf("failed to hash password: %s", err))
+		h.WriteErr(w, -1, nil, fmt.Errorf("failed to hash password: %s", err))
 		return
 	}
 
@@ -183,19 +212,19 @@ func (h CreateUserHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Save in DB
 	if err := h.db.Create(&user).Error; err != nil {
-		h.WriteErr(w, fmt.Errorf("failed to save user in database"), err)
+		h.WriteErr(w, -1, fmt.Errorf("failed to save user in database"), err)
 		return
 	}
 
 	// Delete invite code
 	if err := h.db.Delete(&inviteCode).Error; err != nil {
-		h.WriteErr(w, nil,
+		h.WriteErr(w, -1, nil,
 			fmt.Errorf("failed to delete invite code: %s", err))
 		return
 	}
 
 	// Respond with new user
-	h.WriteJSON(w, user)
+	h.WriteJSON(w, -1, user)
 }
 
 // InviteCodeExpirer deletes invite codes which are older than a day
