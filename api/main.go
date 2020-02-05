@@ -219,6 +219,17 @@ func (h BaseHandler) WriteJSON(writer http.ResponseWriter, status int,
 // AuthTokenCookie is the name of the authentication token cookie key.
 const AuthTokenCookie string = "Authentication-Token"
 
+// Authorize ensures that a request contains a valid authentication token.
+// True is returned if the request is authorized, and false if not.
+// If false is returned the proper error response is also sent to the client.
+// TODO: Make return user ID
+func Authorize(w http.ResponseWriter, r *http.Request) bool {
+	// TODO: Check for cookie
+	// TODO: Parse token to JWT
+	// TODO: Validate JWT
+	return false
+}
+
 // CreateUserHandler creates a user
 type CreateUserHandler struct {
 	BaseHandler
