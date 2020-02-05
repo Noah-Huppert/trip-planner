@@ -216,6 +216,9 @@ func (h BaseHandler) WriteJSON(writer http.ResponseWriter, status int,
 	}
 }
 
+// AuthTokenCookie is the name of the authentication token cookie key.
+const AuthTokenCookie string = "Authentication-Token"
+
 // CreateUserHandler creates a user
 type CreateUserHandler struct {
 	BaseHandler
@@ -293,7 +296,8 @@ func (h CreateUserHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // AuthUserHandler authenticate a user's password is correct and distribute
-// authentication tokens for the API.
+// an authentication token. The authentication is sent in the body and a
+// cookie is set.
 type AuthUserHandler struct {
 	BaseHandler
 }
@@ -306,7 +310,8 @@ type AuthUserReq struct {
 
 // AuthUserResp contains the created authentication token
 type AuthUserResp struct {
-	AuthToken string `json:"auth_token"`
+	AuthToken string    `json:"auth_token"`
+	Expires   time.Time `json:"expires"`
 }
 
 // ServeHTTP authenticates the user
@@ -335,9 +340,10 @@ func (h AuthUserHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Build JWT authentication token
+	tokenExpires := time.Now().Add(14 * 24 * time.Hour)
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
 		"sub": user.ID,
-		"exp": time.Now().Add(14 * 24 * time.Hour).Unix(),
+		"exp": tokenExpires.Unix(),
 	})
 	tokenStr, err := token.SignedString(h.cfg.JWTSecret)
 	if err != nil {
@@ -347,8 +353,16 @@ func (h AuthUserHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Send auth token response
+	http.SetCookie(w, &http.Cookie{
+		Name:    AuthTokenCookie,
+		Value:   tokenStr,
+		Expires: tokenExpires,
+		Secure:  true,
+	})
+
 	h.WriteJSON(w, -1, AuthUserResp{
 		AuthToken: tokenStr,
+		Expires:   tokenExpires,
 	})
 }
 
